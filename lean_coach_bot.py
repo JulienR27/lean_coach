@@ -8,16 +8,19 @@ from apscheduler.schedulers.background import BackgroundScheduler
 import asyncio
 from google import genai
 from google.genai import types
-from persistence_utils import load_data, save_data
+from db import init_db
+from models import User, Message, Reminder
+from db_utils import content_to_json, content_from_json
+from db import load_all_messages, save_message
 #from google.api_core import retry
 
 # === CONFIGURATION ===
 load_dotenv()
+# Telegram
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-#To store the users
-users_conversation_history = dict()
-# # To store the history of each chat
-users_conversation_history = dict()
+#Loading messages history
+init_db()
+users_conversation_history = load_all_messages()
 # # To store jobId by chatId
 user_jobs = dict()
 # Google GenAI
@@ -100,22 +103,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     print("New active user:", chat_id)
     await context.bot.send_message(chat_id=chat_id, text=welcome_message)
     # chat history update
-    users_conversation_history[chat_id] = [types.Content(role="model", parts=[types.Part(text=welcome_message)])]
+    content = types.Content(role="model", parts=[types.Part(text=welcome_message)])
+    users_conversation_history[chat_id].append(content)
+    save_message(chat_id=chat_id, content=content)
     # chats_history = load_data("chats_history.json")
     # chats_history[chat_id] = [types.Content(role="model", parts=[types.Part(text=welcome_message)])]
     # save_data(chats_history)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_input = update.message.text
-    chat_id=update.effective_chat.id
+    chat_id = update.effective_chat.id
     print("update.effective_chat.id : ", chat_id)
     # handling chat history
-    users_conversation_history[chat_id].append(
-        types.Content(
-            role="user",
-            parts=[types.Part(text=user_input)]
-            )
-        )
+    content = types.Content(
+                role="user",
+                parts=[types.Part(text=user_input)]
+                )
+    users_conversation_history[chat_id].append(content)
+    save_message(chat_id, content)
     # add tools
     config = types.GenerateContentConfig(
                 system_instruction=instruction,
@@ -126,8 +131,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             config=config,
             contents=users_conversation_history[chat_id]
     )
-    users_conversation_history[chat_id].append(response.candidates[0].content) # update history
-    parts = response.candidates[0].content.parts
+    # history update
+    content = response.candidates[0].content
+    users_conversation_history[chat_id].append(content)
+    save_message(chat_id, content)
+    # function call handling
+    parts = content.parts
     if call := parts[0].function_call:
         if call.name == "schedule_reminder":
             args = call.args
@@ -143,12 +152,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 config=config,
                 contents=users_conversation_history[chat_id],
             )
-            users_conversation_history[chat_id].append(call_result_response.candidates[0].content)
+            # history update
+            content = call_result_response.candidates[0].content
+            users_conversation_history[chat_id].append(content)
+            save_message(chat_id, content)
+            # response after function call
             await context.bot.send_message(chat_id=chat_id, text=call_result_response.text)
-    # Réponse classique
+    # Normal response
     else:
         await context.bot.send_message(chat_id=chat_id, text=parts[0].text)
     print(f"users_conversation_history for chat {chat_id}: \n", users_conversation_history[chat_id])
+
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file = await update.message.voice.get_file()
@@ -180,7 +194,7 @@ async def list_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # === INITIALISATION ===
 if __name__ == '__main__':
-    loop = asyncio.get_event_loop() # récupère la boucle principale
+    loop = asyncio.get_event_loop() # retrieve main loop
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
     # Scheduler
