@@ -6,7 +6,9 @@ Base = declarative_base()
 
 class User(Base):
     __tablename__ = "users"
-    chat_id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, primary_key=True)
+    username = Column(String)
+    chat_id = Column(Integer)
     last_seen = Column(DateTime, default=datetime.now(timezone.utc))
 
 class Message(Base):
